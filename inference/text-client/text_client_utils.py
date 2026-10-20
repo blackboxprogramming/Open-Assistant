@@ -1,4 +1,5 @@
 import json
+from contextlib import closing
 
 import requests
 import sseclient
@@ -16,7 +17,7 @@ class DebugClient:
         auth_data = self.http_client.get(f"{self.backend_url}/auth/callback/debug", params={"code": username}).json()
         assert auth_data["access_token"]["token_type"] == "bearer"
         bearer_token = auth_data["access_token"]["access_token"]
-        logger.debug(f"Logged in as {username} with token {bearer_token}")
+        logger.debug(f"Logged in as {username}")
         self.auth_headers = {"Authorization": f"Bearer {bearer_token}"}
 
     def create_chat(self):
@@ -70,42 +71,46 @@ class DebugClient:
         response.raise_for_status()
         self.message_id = response.json()["id"]
 
-        response = self.http_client.get(
-            f"{self.backend_url}/chats/{self.chat_id}/messages/{self.message_id}/events",
-            stream=True,
-            headers={
-                "Accept": "text/event-stream",
-                **self.auth_headers,
-            },
-        )
-        response.raise_for_status()
-        if response.status_code == 204:
-            response = self.http_client.get(
-                f"{self.backend_url}/chats/{self.chat_id}/messages/{self.message_id}",
-                headers=self.auth_headers,
+        with closing(
+            self.http_client.get(
+                f"{self.backend_url}/chats/{self.chat_id}/messages/{self.message_id}/events",
+                stream=True,
+                headers={
+                    "Accept": "text/event-stream",
+                    **self.auth_headers,
+                },
             )
+        ) as response:
             response.raise_for_status()
-            data = response.json()
-            yield data["content"]
-        else:
-            client = sseclient.SSEClient(response)
-            events = iter(client.events())
-            for event in events:
-                if event.event == "error":
-                    raise RuntimeError(event.data)
-                if event.event == "ping":
-                    continue
-                try:
-                    data = json.loads(event.data)
-                except json.JSONDecodeError:
-                    raise RuntimeError(f"Failed to decode {event.data=}")
-                event_type = data["event_type"]
-                if event_type == "token":
-                    yield data["text"]
-                elif event_type == "message":
-                    # full message content, can be ignored here
-                    break
-                elif event_type == "error":
-                    raise RuntimeError(data["error"])
-                elif event_type == "pending":
-                    logger.debug(f"Message pending. {data=}")
+            if response.status_code == 204:
+                with closing(
+                    self.http_client.get(
+                        f"{self.backend_url}/chats/{self.chat_id}/messages/{self.message_id}",
+                        headers=self.auth_headers,
+                    )
+                ) as completed_response:
+                    completed_response.raise_for_status()
+                    data = completed_response.json()
+                    yield data["content"]
+            else:
+                client = sseclient.SSEClient(response)
+                events = iter(client.events())
+                for event in events:
+                    if event.event == "error":
+                        raise RuntimeError(event.data)
+                    if event.event == "ping":
+                        continue
+                    try:
+                        data = json.loads(event.data)
+                    except json.JSONDecodeError:
+                        raise RuntimeError(f"Failed to decode {event.data=}")
+                    event_type = data["event_type"]
+                    if event_type == "token":
+                        yield data["text"]
+                    elif event_type == "message":
+                        # full message content, can be ignored here
+                        break
+                    elif event_type == "error":
+                        raise RuntimeError(data["error"])
+                    elif event_type == "pending":
+                        logger.debug(f"Message pending. {data=}")

@@ -83,3 +83,23 @@ wget localhost:8000/openapi.json -O docs/docs/api/inference-openapi.json
 ```
 
 Then make a PR to have the updated docs merged.
+
+## Text Client Response Lifetimes
+
+The text client closes its streaming HTTP response when iteration completes,
+raises an error, or the caller closes the generator. It also closes both responses
+when the server returns an already-completed message through the HTTP 204 fallback.
+Call `close()` on a partially consumed `send_message()` generator when stopping
+early. Login debug messages include the username without the bearer token.
+
+After installing `inference/text-client/requirements.txt`, run these focused
+regressions from the repository root:
+
+```bash
+python3 -B -m unittest discover -s inference/text-client -p test_text_client_utils.py -v
+```
+
+The tests use a fake HTTP transport and mocked SSE events. They check response
+cleanup, token delivery, error propagation, and token-free login logs without
+starting a server or downloading a model. They do not validate SSE wire framing
+or a live inference service.
